@@ -1,8 +1,11 @@
 import {
   concatMap,
+  filter,
   finalize,
   fromEvent,
   map,
+  mapTo,
+  merge,
   Observable,
   Subject,
   switchMap,
@@ -41,15 +44,64 @@ class PlaneComponent extends HTMLElement {
        `;
   }
   connectedCallback() {
+    merge(
+      this.onKeyboard("ArrowUp"),
+      this.onKeyboard("ArrowDown"),
+      this.onKeyboard("ArrowLeft"),
+      this.onKeyboard("ArrowRight")
+    )
+      .pipe(
+        switchMap((keyName) => {
+          return new Observable((observer) => {
+            let angle = 0;
+            switch (keyName) {
+              case "ArrowUp":
+                angle = -90;
+                break;
+              case "ArrowDown":
+                angle = 90;
+                break;
+              case "ArrowLeft":
+                angle = 180;
+                break;
+              case "ArrowRight":
+                angle = 0;
+                break;
+            }
+            angle += 45;
+            this.planeElement.style.transform = `rotate(${angle}deg)`;
+            const index = setTimeout(() => {
+              observer.next(keyName);
+              observer.complete();
+            }, 200);
+            return () => clearTimeout(index);
+          });
+        })
+      )
+      .subscribe((keyName) => {
+        const clientRect = this.planeElement.getBoundingClientRect();
+        let planeX = clientRect.x + clientRect.width / 2 - this.originX;
+        let planeY = clientRect.y + clientRect.height / 2 - this.originY;
+        switch (keyName) {
+          case "ArrowUp":
+            planeY -= 100;
+            break;
+          case "ArrowDown":
+            planeY += 100;
+            break;
+          case "ArrowLeft":
+            planeX -= 100;
+            break;
+          case "ArrowRight":
+            planeX += 100;
+            break;
+        }
+        this.positionElement.style.transform = `translate(${planeX}px, ${planeY}px)`;
+      });
+
     fromEvent<MouseEvent>(document, "click")
       .pipe(
-        tap((event) => {
-          if (!this.originX && !this.originY) {
-            const clientRect = this.planeElement.getBoundingClientRect();
-            this.originX = Math.ceil(clientRect.x + clientRect.width / 2);
-            this.originY = Math.ceil(clientRect.y + clientRect.height / 2);
-          }
-        }),
+        this.rememberOrigin(),
         map((event) => {
           const pointerLocationElement = document.createElement(
             "app-pointer-location"
@@ -60,8 +112,11 @@ class PlaneComponent extends HTMLElement {
           return { event, pointerLocationElement };
         }),
         concatMap(({ event, pointerLocationElement }) => {
-          return this.rotate$(event).pipe(
-            switchMap((event) =>
+          return this.rotate$({
+            clientX: event.clientX,
+            clientY: event.clientY,
+          }).pipe(
+            switchMap(() =>
               this.move$(event).pipe(
                 finalize(() => pointerLocationElement.remove())
               )
@@ -77,6 +132,19 @@ class PlaneComponent extends HTMLElement {
     return (Math.atan2(y, x) * 180) / Math.PI;
   }
 
+  rememberOrigin() {
+    return (source: Observable<any>) =>
+      source.pipe(
+        tap((event) => {
+          if (!this.originX && !this.originY) {
+            const clientRect = this.planeElement.getBoundingClientRect();
+            this.originX = Math.ceil(clientRect.x + clientRect.width / 2);
+            this.originY = Math.ceil(clientRect.y + clientRect.height / 2);
+          }
+        })
+      );
+  }
+
   move$(event: MouseEvent) {
     return new Observable<MouseEvent>((observer) => {
       const diffX = event.clientX - this.originX;
@@ -90,14 +158,14 @@ class PlaneComponent extends HTMLElement {
     });
   }
 
-  rotate$(event: MouseEvent) {
-    return new Observable<MouseEvent>((observer) => {
+  rotate$(axis: { clientX: number; clientY: number }) {
+    return new Observable<void>((observer) => {
       const clientRect = this.planeElement.getBoundingClientRect();
       const planeX = clientRect.x + clientRect.width / 2;
       const planeY = clientRect.y + clientRect.height / 2;
 
-      const diffX = event.clientX - planeX;
-      const diffY = event.clientY - planeY;
+      const diffX = axis.clientX - planeX;
+      const diffY = axis.clientY - planeY;
 
       const calAngle = this.calcAngleDegrees(diffX, diffY);
       let angle = Math.ceil(calAngle) + 45;
@@ -106,11 +174,21 @@ class PlaneComponent extends HTMLElement {
       }
       this.planeElement.style.transform = `rotate(${angle}deg)`;
       const timeoutIndex = setTimeout(() => {
-        observer.next(event);
+        observer.next();
         observer.complete();
       }, 200);
       return () => clearTimeout(timeoutIndex);
     });
+  }
+
+  onKeyboard(key: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight") {
+    return fromEvent<KeyboardEvent>(document, "keydown").pipe(
+      tap((event) => {
+        event.preventDefault();
+      }),
+      filter((event) => event.key === key),
+      mapTo(key)
+    );
   }
 
   disconnectedCallback() {
